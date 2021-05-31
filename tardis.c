@@ -98,6 +98,13 @@ void before_select(pid_t pid, struct user_regs_struct * uregs) {
 	}
 }
 
+void before_clock_nanosleep(pid_t pid, struct user_regs_struct * uregs) {
+	struct timespec rqtp;
+	read_block(pid, &rqtp, (void *)uregs->rdx, sizeof(struct timespec));
+	scale_timespec(&rqtp, 1.0/delayfactor, 0);
+	write_block(pid, &rqtp, (void *)uregs->rdx, sizeof(struct timespec));
+}
+
 /* post-syscall handlers */
 
 void after_gettimeofday(pid_t pid, struct user_regs_struct * uregs) {
@@ -119,6 +126,13 @@ void after_time(pid_t pid, struct user_regs_struct * uregs) {
 	ptrace(PTRACE_SETREGS, pid, 0, uregs);
 }
 
+void after_clock_nanosleep(pid_t pid, struct user_regs_struct * uregs) {
+	struct timespec rmtp;
+	read_block(pid, &rmtp, (void *)uregs->rcx, sizeof(struct timespec));
+	scale_timespec(&rmtp, 1.0/delayfactor, 0);
+	write_block(pid, &rmtp, (void *)uregs->rcx, sizeof(struct timespec));
+}
+
 int main(int argc, char *argv[], char *envp[]) {
 	
 	if (argc < 3) {
@@ -132,10 +146,12 @@ int main(int argc, char *argv[], char *envp[]) {
 	before_handlers[SYS_nanosleep] = before_nanosleep;
 	before_handlers[SYS_poll] = before_poll;
 	before_handlers[SYS_select] = before_select;
+	before_handlers[SYS_clock_nanosleep] = before_clock_nanosleep;
 	
 	after_handlers[SYS_gettimeofday] = after_gettimeofday;
 	after_handlers[SYS_clock_gettime] = after_clock_gettime;
 	after_handlers[SYS_time] = after_time;
+	after_handlers[SYS_clock_nanosleep] = after_clock_nanosleep;
 	
 	struct timespec sts;
 	for (clockid_t id = 0; id < NUM_CLKIDS; id++) {
@@ -153,15 +169,17 @@ int main(int argc, char *argv[], char *envp[]) {
 		perror("execvpe"); // execvpe only returns on error
 		exit(-1);
 	}
-	
-	fprintf(stderr, "Child spawned with PID %d\n", child);
-	
+	#ifdef DEBUG
+	    fprintf(stderr, "Child spawned with PID %d\n", child);
+	#endif
 	ptrace(PTRACE_SEIZE, child, 0, PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEEXEC | PTRACE_O_EXITKILL | PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE);
 	wait(NULL); // wait for SIGSTOP to happen
 	ptrace(PTRACE_SYSCALL, child, 0, 0); // continue execution
 	
 	if (is64bit(child)) {
-		fprintf(stderr, "Child is 64-bit\n");
+		#ifdef DEBUG
+		    fprintf(stderr, "Child is 64-bit\n");
+		#endif
 	} else {
 		fprintf(stderr, "ERROR: 32-bit processes are currently unsupported\n");
 		exit(-1);
@@ -173,7 +191,7 @@ int main(int argc, char *argv[], char *envp[]) {
 		pid_t pid = waitpid(-1, &status, 0);
 		if (WIFEXITED(status)) {
 			if (pid == child) {
-				break;
+				exit(WEXITSTATUS(status));
 			} else {
 				continue;
 			}
@@ -209,6 +227,4 @@ int main(int argc, char *argv[], char *envp[]) {
 		leavesys[pid] ^= true;
 		ptrace(PTRACE_SYSCALL, pid, 0, 0);
 	}
-	
-	exit(EXIT_SUCCESS);
 }
